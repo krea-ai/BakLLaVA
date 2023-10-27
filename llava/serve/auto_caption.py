@@ -1,4 +1,5 @@
 import argparse
+from pprint import pprint
 from tqdm import tqdm
 import torch
 
@@ -28,13 +29,43 @@ def load_image(image_file):
     return image
 
 
-def main(args, image_batches):
+def caption_batch(args, image_batches):
     # Model
     disable_torch_init()
 
     model_name = get_model_name_from_path(args.model_path)
     tokenizer, model, image_processor, context_len = load_pretrained_model(args.model_path, args.model_base, model_name, args.load_8bit, args.load_4bit)
 
+    # if 'llama-2' in model_name.lower():
+    #     conv_mode = "llava_llama_2"
+    # elif "v1" in model_name.lower():
+    #     conv_mode = "llava_v1"
+    # elif "mpt" in model_name.lower():
+    #     conv_mode = "mpt"
+    # else:
+    #     conv_mode = "llava_v0"
+
+    batch_captions = []
+    for batch in tqdm(image_batches):
+        if not batch:
+            raise ValueError(f"Invalid image batch: {batch}")
+
+        if isinstance(batch[0], str):
+            batch = [load_image(path) for path in batch]
+        frame_captions = []
+
+        for image in batch:
+            #create new conversation (reset context) for every image
+
+            caption = caption_image(args, tokenizer, model, image_processor, image)
+            # print(f"caption: = {caption}")
+            frame_captions.append(caption)
+        batch_captions.append(frame_captions)
+    return batch_captions
+
+def caption_image(args, tokenizer, model, image_processor, image, prompt=None):
+
+    model_name = get_model_name_from_path(args.model_path)
     if 'llama-2' in model_name.lower():
         conv_mode = "llava_llama_2"
     elif "v1" in model_name.lower():
@@ -44,33 +75,18 @@ def main(args, image_batches):
     else:
         conv_mode = "llava_v0"
 
-    for batch in tqdm(image_batches):
-        if not batch:
-            raise ValueError(f"Invalid image batch: {batch}")
+    if args.conv_mode is not None and conv_mode != args.conv_mode:
+        print('[WARNING] the auto inferred conversation mode is {}, while `--conv-mode` is {}, using {}'.format(conv_mode, args.conv_mode, args.conv_mode))
+    else:
+        args.conv_mode = conv_mode
 
-        if isinstance(batch[0], str):
-            batch = [load_image(path) for path in batch]
-        captions = []
+    conv = conv_templates[args.conv_mode].copy()
+    if "mpt" in model_name.lower():
+        roles = ('user', 'assistant')
+    else:
+        roles = conv.roles
 
-        for image in batch:
-            #create new conversation (reset context) for every image
-            if args.conv_mode is not None and conv_mode != args.conv_mode:
-                print('[WARNING] the auto inferred conversation mode is {}, while `--conv-mode` is {}, using {}'.format(conv_mode, args.conv_mode, args.conv_mode))
-            else:
-                args.conv_mode = conv_mode
 
-            conv = conv_templates[args.conv_mode].copy()
-            if "mpt" in model_name.lower():
-                roles = ('user', 'assistant')
-            else:
-                roles = conv.roles
-
-            caption = caption_image(args, tokenizer, model, image_processor, conv, roles, image)
-            # print(f"caption: = {caption}")
-            captions.append(caption)
-        return captions
-
-def caption_image(args, tokenizer, model, image_processor, conv, roles, image, prompt=None):
     if prompt is None:
         prompt = DEFAULT_FRAME_CAPTIONING_PROMPT
     image_tensor = image_processor.preprocess(image, return_tensors='pt')['pixel_values'].half().cuda()
@@ -114,19 +130,32 @@ def caption_image(args, tokenizer, model, image_processor, conv, roles, image, p
     return outputs
 
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--model-path", type=str, default="liuhaotian/llava-v1.5-13b")
+parser.add_argument("--model-base", type=str, default=None)
+# parser.add_argument("--image-file", type=str, required=True)
+parser.add_argument("--num-gpus", type=int, default=1)
+parser.add_argument("--conv-mode", type=str, default=None)
+parser.add_argument("--temperature", type=float, default=0.2)
+parser.add_argument("--max-new-tokens", type=int, default=512)
+parser.add_argument("--load-8bit", action="store_true")
+parser.add_argument("--load-4bit", action="store_true")
+parser.add_argument("--debug", action="store_true")
+args = parser.parse_args()
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model-path", type=str, default="liuhaotian/llava-v1.5-13b")
-    parser.add_argument("--model-base", type=str, default=None)
-    # parser.add_argument("--image-file", type=str, required=True)
-    parser.add_argument("--num-gpus", type=int, default=1)
-    parser.add_argument("--conv-mode", type=str, default=None)
-    parser.add_argument("--temperature", type=float, default=0.2)
-    parser.add_argument("--max-new-tokens", type=int, default=512)
-    parser.add_argument("--load-8bit", action="store_true")
-    parser.add_argument("--load-4bit", action="store_true")
-    parser.add_argument("--debug", action="store_true")
-    args = parser.parse_args()
+    # parser = argparse.ArgumentParser()
+    # parser.add_argument("--model-path", type=str, default="liuhaotian/llava-v1.5-13b")
+    # parser.add_argument("--model-base", type=str, default=None)
+    # # parser.add_argument("--image-file", type=str, required=True)
+    # parser.add_argument("--num-gpus", type=int, default=1)
+    # parser.add_argument("--conv-mode", type=str, default=None)
+    # parser.add_argument("--temperature", type=float, default=0.2)
+    # parser.add_argument("--max-new-tokens", type=int, default=512)
+    # parser.add_argument("--load-8bit", action="store_true")
+    # parser.add_argument("--load-4bit", action="store_true")
+    # parser.add_argument("--debug", action="store_true")
+    # args = parser.parse_args()
 
     #image batches is a list of batches of n frames from the same scene.
     test_paths2 = ['https://canvascontent.krea.ai/1aadc7f7-1438-4cc4-8099-646a5503b407.png', 'https://canvascontent.krea.ai/9a3389a9-d226-418d-9518-4dd5eaf73790.png', 'https://canvascontent.krea.ai/7788fe1d-6fb6-4592-bfd0-f94870e407c2.png']
@@ -136,4 +165,11 @@ if __name__ == "__main__":
         [load_image(path) for path in test_paths], 
         [load_image(path) for path in test_paths2], 
     ]
-    main(args, image_batches)
+    pprint(image_batches)
+    # batch_captions = caption_batch(args, image_batches)
+    
+    model_name = get_model_name_from_path(args.model_path)
+    tokenizer, model, image_processor, context_len = load_pretrained_model(args.model_path, args.model_base, model_name, args.load_8bit, args.load_4bit)
+
+    a = caption_image(args, tokenizer, model, image_processor, load_image(test_paths[0]))
+    print("a: ", a)
